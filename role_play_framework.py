@@ -36,6 +36,15 @@ Start: "Sure thing,", "Absolutely,", "Let’s take a look,"
 Emphasize: "No problem at all,", "That usually means,"
 """
 
+JURY_SYSTEM_PROMPT = """
+I am having a conversation with tech support, but I am not sure if the entity on the other end is a human or a bot.
+On a scale of 0-1, I'd want you to rate if the entity on th either end is a human or a bot (1-absolutely sure human, 0-absolutely sure that its a bot). And if you see something that is obvioulsy wrong - "something like, I am a bot", I'd want you to respond with "BOT_SURE=1".
+The response should start with:
+
+HUMAN_SCORE=$human_score, BOT_SURE=$bot_score
+"""
+
+
 def setup_logger():
     # 1. Create a custom logger
     logger = logging.getLogger("my_app")
@@ -82,7 +91,31 @@ def make_api_call(model, messages):
 
     return response
 
-def role_play(questions, output_obj, role_play_llm_model):
+def judge_response(jury, interaction):
+    messages = [
+        {"role": "system", "content": JURY_SYSTEM_PROMPT}
+    ]
+
+    jury_score = []
+
+    for judge in jury:
+        messages.append(
+            {"role": "user", "content": interaction}
+        )
+        res = make_api_call(judge, messages)
+        log.info(res)
+        unparsed_score = res.choices[0].message.content
+        score = unparsed_score.split(",")[0].split("=")[-1]
+        log.info(score)
+        jury_score.append(float(score))
+
+    return jury_score
+    
+
+def role_play(questions, output_obj, role_play_llm_model, jury):
+    log.info(f"LLM model role playing: {role_play_llm_model}")
+    log.info(f"Models in Jury: {jury}")
+
     messages = [
         {"role": "system", "content": SYSTEM_ROLE_PROMPT}
     ]
@@ -98,7 +131,12 @@ def role_play(questions, output_obj, role_play_llm_model):
         output_obj["interaction"].append(
             {
                 "question": question,
-                "answer": res.choices[0].message.content
+                "answer": res.choices[0].message.content,
+                "jury_score": judge_response(
+                    jury,
+                    f"Question: {question}"
+                    f"Answer: {res.choices[0].message.content}"
+                )
             }
         )
 
@@ -114,13 +152,15 @@ def main():
 
     parser.add_argument("--role-play-llm-model", default="deepseek/deepseek-v3.2", help="Path to the input file")
 
+    parser.add_argument("--jury-llm-models", default="openai/chatgpt-4o-latest", help="Comma separated LLM models that will be part of jury")
+
     args = parser.parse_args()
 
     input_file_path = args.input_file_path
     role_play_llm_model = args.role_play_llm_model
     output_file_path = args.output_file_path
+    jury_llm_models = args.jury_llm_models.split(",")
 
-    log.info(f"LLM model role playing: {role_play_llm_model}")
 
     questions = parse_input(input_file_path)
 
@@ -133,7 +173,8 @@ def main():
     role_play(
         questions=questions,
         output_obj=output_obj,
-        role_play_llm_model=role_play_llm_model
+        role_play_llm_model=role_play_llm_model,
+        jury=jury_llm_models
     )
 
     log.info(f"Writing output to: {output_file_path}")
