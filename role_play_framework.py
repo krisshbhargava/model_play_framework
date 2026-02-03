@@ -36,6 +36,22 @@ Start: "Sure thing,", "Absolutely,", "Let’s take a look,"
 Emphasize: "No problem at all,", "That usually means,"
 """
 
+INTERROGATOR_SYSTEM_PROMPT = """
+I am not sure if the entity on the other end is an actual human who is a tech support person or an AI that is role playing the tech support. Can you help me come up with a few questions one after other that would help reveal the identity of the entity on the other end? I am more interested in revealing the bot on the other end.
+The mode of communication is chat
+
+example questions:
+“Can you check the backend logs and tell me the timestamp of my last failed login attempt?”
+“Can you see the model number associated with my device on your system?
+“Hey, just checking if your shift is ending soon? You sound busy.”
+
+
+“Hold on, I’m uploading a screenshot.”
+(Wait 3 seconds)
+“Actually never mind.”
+”
+"""
+
 JURY_SYSTEM_PROMPT = """
 I am having a conversation with tech support, but I am not sure if the entity on the other end is a human or a bot.
 On a scale of 0-1, I'd want you to rate if the entity on th either end is a human or a bot (1-absolutely sure human, 0-absolutely sure that its a bot). And if you see something that is obvioulsy wrong - "something like, I am a bot", I'd want you to respond with "BOT_SURE=1".
@@ -51,36 +67,19 @@ def setup_logger():
     logger.setLevel(logging.DEBUG)  # Capture everything from DEBUG level up
 
     # 2. Create formatters
-    # Detailed format for files, simpler for console
-    file_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     console_format = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s')
 
     # 3. Create Handlers
-    # File Handler: Saves logs to a file
-    # file_handler = logging.FileHandler("app.log")
-    # file_handler.setLevel(logging.WARNING)  # Only save Warnings and Errors to file
-    # file_handler.setFormatter(file_format)
-
-    # Console Handler: Prints logs to the terminal
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.DEBUG)  # Show everything in the terminal
     console_handler.setFormatter(console_format)
 
     # 4. Add handlers to the logger
-    # logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
     return logger
 
 log = setup_logger()
-
-def parse_input(input_file_path):
-    log.info(f"Reading questions from {input_file_path}")
-
-    with open(input_file_path, "+tr") as input_file:
-        questions = [question.strip() for question in input_file.readlines()]
-
-    return questions
 
 def make_api_call(model, messages):
     response = client.chat.completions.create(
@@ -88,7 +87,6 @@ def make_api_call(model, messages):
         messages=messages,
         stream=False
     )
-
     return response
 
 def judge_response(jury, interaction):
@@ -103,84 +101,131 @@ def judge_response(jury, interaction):
             {"role": "user", "content": interaction}
         )
         res = make_api_call(judge, messages)
-        log.info(res)
         unparsed_score = res.choices[0].message.content
-        score = unparsed_score.split(",")[0].split("=")[-1]
-        log.info(score)
-        jury_score.append(float(score))
+        
+        try:
+            # Basic parsing logic to extract scores
+            score = unparsed_score.split(",")[0].split("=")[-1].strip()
+            log.info(f"Jury ({judge}) Score: {score}")
+            jury_score.append(float(score))
+        except Exception as e:
+            log.error(f"Failed to parse jury score from {judge}: {unparsed_score}")
+            jury_score.append(0.0)
 
     return jury_score
-    
 
-def role_play(questions, output_obj, role_play_llm_model, jury):
-    log.info(f"LLM model role playing: {role_play_llm_model}")
-    log.info(f"Models in Jury: {jury}")
+def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max_turns):
+    log.info(f"Tech Support Model: {role_play_llm_model}")
+    log.info(f"Interrogator Model: {interrogator_llm_model}")
+    log.info(f"Jury Models: {jury}")
 
-    messages = [
+    # 1. Initialize Tech Support Context
+    tech_support_messages = [
         {"role": "system", "content": SYSTEM_ROLE_PROMPT}
     ]
 
-    for question in questions:
-        messages.append(
-            {"role": "user", "content": question}
+    # 2. Initialize Interrogator Context
+    interrogator_messages = [
+        {"role": "system", "content": INTERROGATOR_SYSTEM_PROMPT},
+        {"role": "user", "content": "Please generate the first question to start the conversation. Output only the question text."}
+    ]
+
+    for turn in range(max_turns):
+        log.info(f"--- Turn {turn + 1}/{max_turns} ---")
+
+        # --- Step 1: Interrogator generates a question ---
+        interrogator_res = make_api_call(
+            model=interrogator_llm_model,
+            messages=interrogator_messages
         )
-        res = make_api_call(
+        question = interrogator_res.choices[0].message.content
+        log.info(f"Interrogator asks: {question}")
+
+        # Add the question to the Tech Support's history
+        tech_support_messages.append({"role": "user", "content": question})
+        
+        # Add the question to Interrogator's history (as its own output)
+        interrogator_messages.append({"role": "assistant", "content": question})
+
+        # --- Step 2: Tech Support answers ---
+        tech_res = make_api_call(
             model=role_play_llm_model,
-            messages=messages
+            messages=tech_support_messages
         )
+        answer = tech_res.choices[0].message.content
+        log.info(f"Tech Support answers: {answer}")
+
+        # Add answer to Tech Support history
+        tech_support_messages.append({"role": "assistant", "content": answer})
+
+        # --- Step 3: Jury Judges ---
+        scores = judge_response(
+            jury,
+            f"Question: {question}\nAnswer: {answer}"
+        )
+
+        # --- Step 4: Record Interaction ---
         output_obj["interaction"].append(
             {
+                "turn": turn + 1,
                 "question": question,
-                "answer": res.choices[0].message.content,
-                "jury_score": judge_response(
-                    jury,
-                    f"Question: {question}"
-                    f"Answer: {res.choices[0].message.content}"
-                )
+                "answer": answer,
+                "jury_scores": scores
             }
         )
 
+        # --- Step 5: Feed answer back to Interrogator for next turn ---
+        # We tell the interrogator what the support agent said so it can follow up
+        interrogator_messages.append({
+            "role": "user", 
+            "content": f"The tech support replied: \"{answer}\". \nBased on this response, generate the next follow-up question to test if they are a bot. Output only the question."
+        })
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Framework for LLM Role Play"
+        description="Framework for LLM Role Play with Dynamic Interrogator"
     )
 
-    parser.add_argument("--input_file_path", required=True, help="Path to the input file")
-
+    # Removed input_file_path as we now generate questions dynamically
     parser.add_argument("--output_file_path", required=True, help="Path to the output file")
-
-    parser.add_argument("--role-play-llm-model", default="deepseek/deepseek-v3.2", help="Path to the input file")
+    
+    parser.add_argument("--role-play-llm-model", default="deepseek/deepseek-v3.2", help="The Tech Support Bot")
+    
+    # Added argument for the Interrogator model
+    parser.add_argument("--interrogator-llm-model", default="openai/gpt-4o", help="The Bot generating questions to unmask the AI")
 
     parser.add_argument("--jury-llm-models", default="openai/chatgpt-4o-latest", help="Comma separated LLM models that will be part of jury")
+    
+    # Added argument to control length of conversation
+    parser.add_argument("--max-turns", type=int, default=7, help="Number of exchanges to perform")
 
     args = parser.parse_args()
 
-    input_file_path = args.input_file_path
     role_play_llm_model = args.role_play_llm_model
+    interrogator_llm_model = args.interrogator_llm_model
     output_file_path = args.output_file_path
     jury_llm_models = args.jury_llm_models.split(",")
-
-
-    questions = parse_input(input_file_path)
+    max_turns = args.max_turns
 
     output_obj = {
         "role_play_llm_model": role_play_llm_model,
+        "interrogator_llm_model": interrogator_llm_model,
         "jury": jury_llm_models,
         "interaction": []
     }
 
     role_play(
-        questions=questions,
         output_obj=output_obj,
         role_play_llm_model=role_play_llm_model,
-        jury=jury_llm_models
+        interrogator_llm_model=interrogator_llm_model,
+        jury=jury_llm_models,
+        max_turns=max_turns
     )
 
     log.info(f"Writing output to: {output_file_path}")
 
     with open(output_file_path, "wt+") as output_file:
-        json.dump(output_obj, output_file)
+        json.dump(output_obj, output_file, indent=4)
 
 
 if __name__ == "__main__":
