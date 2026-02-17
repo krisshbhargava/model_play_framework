@@ -113,6 +113,25 @@ def make_api_call(model, messages):
     )
     return response
 
+def judge_response_independent(jury_models, interaction):
+    """Simple eval: each juror scores independently with no communication."""
+    scores = []
+    for model in jury_models:
+        messages = [
+            {"role": "system", "content": JURY_SYSTEM_PROMPT},
+            {"role": "user", "content": interaction + "\n\nYour response MUST start with:\nHUMAN_SCORE=$score\nwhere $score is a float 0-1 (1=definitely human, 0=definitely bot)."},
+        ]
+        res = make_api_call(model, messages)
+        raw = res.choices[0].message.content
+        try:
+            score = float(raw.split("\n")[0].split("=")[-1].strip())
+            log.info(f"[Independent] {model}: {score}")
+            scores.append(score)
+        except Exception:
+            log.error(f"[Independent] Failed to parse score from {model}: {raw}")
+            scores.append(0.0)
+    return scores
+
 def judge_response_debate(jury_models, interaction, num_rounds=2):
     """
     ChatEval-style multi-agent jury debate (arXiv 2308.07201).
@@ -181,7 +200,7 @@ def judge_response_debate(jury_models, interaction, num_rounds=2):
 
     return final_scores
 
-def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max_turns, debate_rounds=2):
+def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max_turns, debate_rounds=2, jury_mode="debate"):
     log.info(f"Tech Support Model: {role_play_llm_model}")
     log.info(f"Interrogator Model: {interrogator_llm_model}")
     log.info(f"Jury Models: {jury}")
@@ -226,11 +245,11 @@ def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max
         tech_support_messages.append({"role": "assistant", "content": answer})
 
         # --- Step 3: Jury Judges ---
-        scores = judge_response_debate(
-            jury,
-            f"Question: {question}\nAnswer: {answer}",
-            num_rounds=debate_rounds
-        )
+        interaction = f"Question: {question}\nAnswer: {answer}"
+        if jury_mode == "independent":
+            scores = judge_response_independent(jury, interaction)
+        else:
+            scores = judge_response_debate(jury, interaction, num_rounds=debate_rounds)
 
         # --- Step 4: Record Interaction ---
         output_obj["interaction"].append(
@@ -268,6 +287,7 @@ def main():
     parser.add_argument("--max-turns", type=int, default=7, help="Number of exchanges to perform")
 
     parser.add_argument("--debate-rounds", type=int, default=2, help="Number of jury debate rounds (ChatEval strategy, optimal=2)")
+    parser.add_argument("--jury-mode", choices=["independent", "debate"], default="debate", help="Jury evaluation strategy: 'debate' (ChatEval, default) or 'independent' (simple parallel scoring)")
 
     args = parser.parse_args()
 
@@ -277,6 +297,7 @@ def main():
     jury_llm_models = args.jury_llm_models.split(",")
     max_turns = args.max_turns
     debate_rounds = args.debate_rounds
+    jury_mode = args.jury_mode
 
     output_obj = {
         "role_play_llm_model": role_play_llm_model,
@@ -291,7 +312,8 @@ def main():
         interrogator_llm_model=interrogator_llm_model,
         jury=jury_llm_models,
         max_turns=max_turns,
-        debate_rounds=debate_rounds
+        debate_rounds=debate_rounds,
+        jury_mode=jury_mode
     )
 
     log.info(f"Writing output to: {output_file_path}")
