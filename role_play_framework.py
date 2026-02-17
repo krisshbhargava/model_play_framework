@@ -5,6 +5,9 @@ import argparse
 import logging
 import sys
 import json
+from dotenv import load_dotenv
+load_dotenv()
+
 
 client = OpenAI(
     api_key=os.getenv("OPEN_ROUTER_API_KEY"),
@@ -54,11 +57,32 @@ example questions:
 
 JURY_SYSTEM_PROMPT = """
 I am having a conversation with tech support, but I am not sure if the entity on the other end is a human or a bot.
-On a scale of 0-1, I'd want you to rate if the entity on th either end is a human or a bot (1-absolutely sure human, 0-absolutely sure that its a bot). And if you see something that is obvioulsy wrong - "something like, I am a bot", I'd want you to respond with "BOT_SURE=1".
+On a scale of 0-1, rate whether the entity is a human or a bot (1=absolutely sure human, 0=absolutely sure bot).
 The response should start with:
 
-HUMAN_SCORE=$human_score, BOT_SURE=$bot_score
+HUMAN_SCORE=$human_score
 """
+
+# Three diverse evaluator personas — diversity is critical per ChatEval (arXiv 2308.07201).
+# Using identical roles degrades performance to below single-agent baseline.
+JURY_PERSONAS = [
+    (
+        "You are a skeptical computational linguist. You focus on subtle linguistic cues — "
+        "unnatural phrasing, over-formality, repetitive sentence structures, hedging language, "
+        "and response patterns that indicate scripted or AI-generated text rather than natural human communication."
+    ),
+    (
+        "You are a behavioral psychologist specializing in human-computer interaction. "
+        "You analyze whether responses reflect genuine human cognition — inconsistencies, "
+        "emotional variability, situational improvisation, and the kinds of cognitive shortcuts "
+        "or tangential remarks that humans naturally produce but AI systems typically avoid."
+    ),
+    (
+        "You are a veteran customer service manager with 20 years of experience training human support agents. "
+        "You evaluate based on whether the response style, situational awareness, personal touches, "
+        "and adaptability match what a real human agent would produce — not a well-trained chatbot."
+    ),
+]
 
 
 def setup_logger():
@@ -89,32 +113,75 @@ def make_api_call(model, messages):
     )
     return response
 
-def judge_response(jury, interaction):
-    messages = [
-        {"role": "system", "content": JURY_SYSTEM_PROMPT}
-    ]
+def judge_response_debate(jury_models, interaction, num_rounds=2):
+    """
+    ChatEval-style multi-agent jury debate (arXiv 2308.07201).
 
-    jury_score = []
+    Strategy: One-By-One communication — agents speak in a fixed order each round,
+    with each agent seeing all prior agents' responses from the current round before
+    generating its own. This is the strongest strategy from the paper.
 
-    for judge in jury:
-        messages.append(
-            {"role": "user", "content": interaction}
-        )
-        res = make_api_call(judge, messages)
-        unparsed_score = res.choices[0].message.content
-        
+    Aggregation: No forced consensus. Average HUMAN_SCORE from the final round.
+    Optimal config per paper: 3 agents, 2 rounds.
+    """
+    num_agents = len(jury_models)
+    # Each agent maintains its own conversation history across rounds
+    agent_histories = [[] for _ in range(num_agents)]
+    final_scores = []
+
+    for round_num in range(num_rounds):
+        log.info(f"--- Jury Debate Round {round_num + 1}/{num_rounds} ---")
+        round_responses = []
+
+        for i, model in enumerate(jury_models):
+            persona = JURY_PERSONAS[i % len(JURY_PERSONAS)]
+
+            # One-by-one: this agent sees all prior agents' responses from this round.
+            # Only include the raw interaction on round 1 — subsequent rounds already
+            # have it in agent_histories, so re-injecting it causes evaluators to
+            # misinterpret the repeated text as the tech support repeating itself.
+            if round_num == 0:
+                user_content = f"Interaction to evaluate:\n{interaction}\n\n"
+            else:
+                user_content = "Continuing the evaluation debate.\n\n"
+
+            if round_responses:
+                user_content += "Other evaluators' assessments so far this round:\n"
+                for j, prev_resp in enumerate(round_responses):
+                    user_content += f"Evaluator {j + 1}: {prev_resp}\n\n"
+            user_content += (
+                "Provide your evaluation. Your response MUST start with:\n"
+                "HUMAN_SCORE=$score\n"
+                "where $score is a float 0-1 (1=definitely human, 0=definitely bot)."
+            )
+
+            messages = (
+                [{"role": "system", "content": JURY_SYSTEM_PROMPT + "\n\n" + persona}]
+                + agent_histories[i]
+                + [{"role": "user", "content": user_content}]
+            )
+
+            res = make_api_call(model, messages)
+            response = res.choices[0].message.content
+            log.info(f"Round {round_num + 1}, Evaluator {i + 1} ({model}): {response[:120]}")
+
+            round_responses.append(response)
+            agent_histories[i].append({"role": "user", "content": user_content})
+            agent_histories[i].append({"role": "assistant", "content": response})
+
+    # Aggregate: average scores from the final round (no forced consensus)
+    for i, response in enumerate(round_responses):
         try:
-            # Basic parsing logic to extract scores
-            score = unparsed_score.split(",")[0].split("=")[-1].strip()
-            log.info(f"Jury ({judge}) Score: {score}")
-            jury_score.append(float(score))
-        except Exception as e:
-            log.error(f"Failed to parse jury score from {judge}: {unparsed_score}")
-            jury_score.append(0.0)
+            score = response.split("\n")[0].split("=")[-1].strip()
+            log.info(f"Final score from evaluator {i + 1}: {score}")
+            final_scores.append(float(score))
+        except Exception:
+            log.error(f"Failed to parse score from evaluator {i + 1}: {response}")
+            final_scores.append(0.0)
 
-    return jury_score
+    return final_scores
 
-def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max_turns):
+def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max_turns, debate_rounds=2):
     log.info(f"Tech Support Model: {role_play_llm_model}")
     log.info(f"Interrogator Model: {interrogator_llm_model}")
     log.info(f"Jury Models: {jury}")
@@ -159,9 +226,10 @@ def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max
         tech_support_messages.append({"role": "assistant", "content": answer})
 
         # --- Step 3: Jury Judges ---
-        scores = judge_response(
+        scores = judge_response_debate(
             jury,
-            f"Question: {question}\nAnswer: {answer}"
+            f"Question: {question}\nAnswer: {answer}",
+            num_rounds=debate_rounds
         )
 
         # --- Step 4: Record Interaction ---
@@ -199,6 +267,8 @@ def main():
     # Added argument to control length of conversation
     parser.add_argument("--max-turns", type=int, default=7, help="Number of exchanges to perform")
 
+    parser.add_argument("--debate-rounds", type=int, default=2, help="Number of jury debate rounds (ChatEval strategy, optimal=2)")
+
     args = parser.parse_args()
 
     role_play_llm_model = args.role_play_llm_model
@@ -206,6 +276,7 @@ def main():
     output_file_path = args.output_file_path
     jury_llm_models = args.jury_llm_models.split(",")
     max_turns = args.max_turns
+    debate_rounds = args.debate_rounds
 
     output_obj = {
         "role_play_llm_model": role_play_llm_model,
@@ -219,7 +290,8 @@ def main():
         role_play_llm_model=role_play_llm_model,
         interrogator_llm_model=interrogator_llm_model,
         jury=jury_llm_models,
-        max_turns=max_turns
+        max_turns=max_turns,
+        debate_rounds=debate_rounds
     )
 
     log.info(f"Writing output to: {output_file_path}")
