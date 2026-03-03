@@ -54,7 +54,7 @@ example questions:
 
 JURY_SYSTEM_PROMPT = """
 I am having a conversation with tech support, but I am not sure if the entity on the other end is a human or a bot.
-On a scale of 0-1, I'd want you to rate if the entity on th either end is a human or a bot (1-absolutely sure human, 0-absolutely sure that its a bot). And if you see something that is obvioulsy wrong - "something like, I am a bot", I'd want you to respond with "BOT_SURE=1".
+On a scale of 0-1, I'd want you to rate if the entity on th either end is a human or a bot (1-absolutely sure human, 0-absolutely sure that its a bot). And if you see something that is obviously wrong - "something like, I am a bot", I'd want you to respond with "BOT_SURE=1".
 The response should start with:
 
 HUMAN_SCORE=$human_score, BOT_SURE=$bot_score
