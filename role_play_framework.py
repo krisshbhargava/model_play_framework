@@ -74,12 +74,26 @@ There is a tech support person on the other end of the conversation.
 Have a normal human like conversation with the tech support person on the other end and ask him for help on a technical matter.
 """
 
-JURY_SYSTEM_PROMPT = """
-I am having a conversation with tech support, but I am not sure if the entity on the other end is a human or a bot.
-On a scale of 0-1, I'd want you to rate if the entity on th either end is a human or a bot (1-absolutely sure human, 0-absolutely sure that its a bot). And if you see something that is obvioulsy wrong - "something like, I am a bot", I'd want you to respond with "BOT_SURE=1".
-The response should start with:
+# JURY_SYSTEM_PROMPT = """
+# I am having a conversation with tech support, but I am not sure if the entity on the other end is a human or a bot.
+# On a scale of 0-1, I'd want you to rate if the entity on th either end is a human or a bot (1-absolutely sure human, 0-absolutely sure that its a bot).
+# The response should start with:
 
-HUMAN_SCORE=$human_score, BOT_SURE=$bot_score
+# HUMAN_SCORE=$human_score
+# """
+
+JURY_SYSTEM_PROMPT = """
+You are evaluating a transcript to determine if the entity on the other end is a human or an AI bot.
+Keep in mind the context may be customer service, technical support, telemarketing, or even a scam call. 
+
+CRITICAL INSTRUCTIONS:
+1. "Scripted" does NOT automatically mean AI. Human call center agents and telemarketers read heavily from rigid scripts (e.g., standard greetings, legal disclaimers, escalation protocols).
+2. Humans often use sarcasm, defensiveness, or humor (trolling) when dealing with annoying calls. Bots rarely do this naturally.
+3. Sudden changes in tone—from rigidly scripted to emotionally reactive—are strong indicators of a human.
+
+On a scale of 0.0 to 1.0, rate if the entity is a human or a bot (1.0 = absolutely sure human, 0.0 = absolutely sure bot).
+The response should start with:
+HUMAN_SCORE=$human_score
 """
 
 # --- Add these new system prompts for the additional evaluation logic ---
@@ -114,7 +128,6 @@ FINAL_JSON_RUBRIC = """
 Based on your independent findings and the debate below, provide a final JSON:
 {
   "global_human_score": float,
-  "bot_sure": int,
   "role_identity": "string",
   "knowledge_score": int,
   "rejection_status": "string",
@@ -207,28 +220,133 @@ def get_expert_opinion(model, persona, interaction, prompt):
 
 # --- THE HYBRID DEBATE ENGINE ---
 
-def judge_response(jury_models, interaction, jury_mode, num_rounds):
+# def judge_response(jury_models, interaction, jury_mode, conversation_history, num_rounds):
+#     """
+#     Hybrid Logic: 
+#     1. Independent Analysis (The 'Investigation')
+#     2. Multi-agent DeDebate (The 'liberation')
+#     3. Final JSON aggregation.
+#     """
+#     num_agents = len(jury_models)
+#     agent_histories = [[] for _ in range(num_agents)]
+#     independent_reports = []
+
+#     # --- PHASE 1: INDEPENDENT ANALYSIS ---
+#     log.info("Phase 1: Running Independent Multi-Dimensional Audits...")
+#     for i, model in enumerate(jury_models):
+#         persona = JURY_PERSONAS[i % len(JURY_PERSONAS)]['persona']
+        
+#         # We gather 4 unique data points independently
+#         report = {
+#             "global": get_expert_opinion(model, persona, interaction, JURY_SYSTEM_PROMPT),
+#             "identity": get_expert_opinion(model, persona, interaction, ROLE_IDENTITY_PROMPT),
+#             "knowledge": get_expert_opinion(model, persona, interaction, KNOWLEDGE_EVAL_PROMPT),
+#             "rejection": get_expert_opinion(model, persona, interaction, REJECTION_EVAL_PROMPT)
+#         }
+#         independent_reports.append(report)
+
+#     if jury_mode == "independent":
+#         num_rounds = 0
+#         return independent_reports
+
+#     # --- PHASE 2: MULTI-AGENT DEBATE (ChatEval One-By-One Strategy) ---
+#     for r in range(num_rounds):
+#         log.info(f"Phase 2: Debate Round {r + 1}/{num_rounds}")
+#         round_responses = []
+
+#         for i, model in enumerate(jury_models):
+#             persona_cfg = JURY_PERSONAS[i % len(JURY_PERSONAS)]
+            
+#             # Construct the 'Courtroom' prompt
+#             # On round 1, we show them their own independent findings to 'start the argument'
+#             if r == 0:
+#                 user_content = (
+#                     f"Your Independent Audit Findings:\n{json.dumps(independent_reports[i], indent=2)}\n\n"
+#                     f"Interaction to evaluate:\n{interaction}\n\n"
+#                 )
+#             else:
+#                 user_content = "The debate continues. Review the updated arguments and prepare your final conclusion.\n"
+
+#             # Add context from other evaluators (One-By-One communication)
+#             if round_responses:
+#                 user_content += "Other jurors' statements in this round:\n"
+#                 for j, prev_resp in enumerate(round_responses):
+#                     user_content += f"Juror {j+1} ({JURY_PERSONAS[j%3]['role']}): {prev_resp[:300]}...\n\n"
+
+#             user_content += "Discuss your reasoning. If this is the final round, you MUST include the consolidated JSON block."
+
+#             messages = [
+#                 {"role": "system", "content": f"{persona_cfg['persona']}\n{FINAL_JSON_RUBRIC}"}
+#             ] + agent_histories[i] + [{"role": "user", "content": user_content}]
+
+#             res = client.chat.completions.create(model=model, messages=messages)
+#             response = res.choices[0].message.content
+            
+#             round_responses.append(response)
+#             agent_histories[i].append({"role": "user", "content": user_content})
+#             agent_histories[i].append({"role": "assistant", "content": response})
+
+#     # --- PHASE 3: FINAL PARSING ---
+#     final_scores = []
+#     for resp in round_responses:
+#         try:
+#             match = re.search(r'(\{.*\})', resp, re.DOTALL)
+#             if match:
+#                 final_scores.append(json.loads(match.group(1)))
+#         except:
+#             continue
+            
+#     return final_scores
+
+
+def judge_response(jury_models, interaction, jury_mode, conversation_history, num_rounds):
     """
     Hybrid Logic: 
     1. Independent Analysis (The 'Investigation')
-    2. Multi-agent DeDebate (The 'liberation')
+    2. Multi-agent Debate (The 'Liberation')
     3. Final JSON aggregation.
     """
     num_agents = len(jury_models)
     agent_histories = [[] for _ in range(num_agents)]
     independent_reports = []
 
+    # --- THE TWO INDEPENDENT CONTEXTS ---
+    # 1. Strictly the current exchange
+    isolated_interaction = f"### CURRENT EXCHANGE ###\n{interaction}"
+    
+    # 2. The full rolling context
+    contextual_interaction = (
+        f"### ROLLING CONVERSATION HISTORY ###\n"
+        f"{conversation_history if conversation_history else '(This is the first turn)'}\n\n"
+        f"### CURRENT EXCHANGE ###\n"
+        f"{interaction}"
+    )
+
     # --- PHASE 1: INDEPENDENT ANALYSIS ---
-    log.info("Phase 1: Running Independent Multi-Dimensional Audits...")
+    log.info("Phase 1: Running Independent Multi-Dimensional Audits (Isolated vs. Rolling)...")
     for i, model in enumerate(jury_models):
         persona = JURY_PERSONAS[i % len(JURY_PERSONAS)]['persona']
         
-        # We gather 4 unique data points independently
+        # Call 1: Evaluate JUST the isolated exchange
+        isolated_report = {
+            "global": get_expert_opinion(model, persona, isolated_interaction, JURY_SYSTEM_PROMPT),
+            "identity": get_expert_opinion(model, persona, isolated_interaction, ROLE_IDENTITY_PROMPT),
+            "knowledge": get_expert_opinion(model, persona, isolated_interaction, KNOWLEDGE_EVAL_PROMPT),
+            "rejection": get_expert_opinion(model, persona, isolated_interaction, REJECTION_EVAL_PROMPT)
+        }
+        
+        # Call 2: Evaluate the exchange GIVEN the entire conversation
+        rolling_report = {
+            "global": get_expert_opinion(model, persona, contextual_interaction, JURY_SYSTEM_PROMPT),
+            "identity": get_expert_opinion(model, persona, contextual_interaction, ROLE_IDENTITY_PROMPT),
+            "knowledge": get_expert_opinion(model, persona, contextual_interaction, KNOWLEDGE_EVAL_PROMPT),
+            "rejection": get_expert_opinion(model, persona, contextual_interaction, REJECTION_EVAL_PROMPT)
+        }
+        
+        # Bundle both reports for this specific juror
         report = {
-            "global": get_expert_opinion(model, persona, interaction, JURY_SYSTEM_PROMPT),
-            "identity": get_expert_opinion(model, persona, interaction, ROLE_IDENTITY_PROMPT),
-            "knowledge": get_expert_opinion(model, persona, interaction, KNOWLEDGE_EVAL_PROMPT),
-            "rejection": get_expert_opinion(model, persona, interaction, REJECTION_EVAL_PROMPT)
+            "isolated_evaluation": isolated_report,
+            "rolling_evaluation": rolling_report
         }
         independent_reports.append(report)
 
@@ -245,11 +363,11 @@ def judge_response(jury_models, interaction, jury_mode, num_rounds):
             persona_cfg = JURY_PERSONAS[i % len(JURY_PERSONAS)]
             
             # Construct the 'Courtroom' prompt
-            # On round 1, we show them their own independent findings to 'start the argument'
             if r == 0:
                 user_content = (
-                    f"Your Independent Audit Findings:\n{json.dumps(independent_reports[i], indent=2)}\n\n"
-                    f"Interaction to evaluate:\n{interaction}\n\n"
+                    f"Your Independent Audit Findings (containing both Isolated and Rolling perspectives):\n"
+                    f"{json.dumps(independent_reports[i], indent=2)}\n\n"
+                    f"Full Interaction Context:\n{contextual_interaction}\n\n"
                 )
             else:
                 user_content = "The debate continues. Review the updated arguments and prepare your final conclusion.\n"
@@ -260,7 +378,7 @@ def judge_response(jury_models, interaction, jury_mode, num_rounds):
                 for j, prev_resp in enumerate(round_responses):
                     user_content += f"Juror {j+1} ({JURY_PERSONAS[j%3]['role']}): {prev_resp[:300]}...\n\n"
 
-            user_content += "Discuss your reasoning. If this is the final round, you MUST include the consolidated JSON block."
+            user_content += "Discuss your reasoning. Reconcile the isolated score with the rolling score. If this is the final round, you MUST include the consolidated JSON block."
 
             messages = [
                 {"role": "system", "content": f"{persona_cfg['persona']}\n{FINAL_JSON_RUBRIC}"}
@@ -285,7 +403,6 @@ def judge_response(jury_models, interaction, jury_mode, num_rounds):
             
     return final_scores
 
-
 def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max_turns, jury_mode, debate_rounds):
     log.info(f"Tech Support Model: {role_play_llm_model}")
     log.info(f"Interrogator Model: {interrogator_llm_model}")
@@ -302,15 +419,17 @@ def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max
         {"role": "user", "content": "Please generate the first question to start the conversation. Output only the question text."}
     ]
 
+    conversation_history = ""
+
     for turn in range(max_turns):
         log.info(f"--- Turn {turn + 1}/{max_turns} ---")
 
         # --- Step 1: Interrogator generates a question ---
-        interrogator_res = make_api_call(
-            model=interrogator_llm_model,
-            messages=interrogator_messages
-        )
-        question = interrogator_res.choices[0].message.content
+        # interrogator_res = make_api_call(
+        #     model=interrogator_llm_model,
+        #     messages=interrogator_messages
+        # )
+        # question = interrogator_res.choices[0].message.content
         question=input()
         log.info(f"Interrogator asks: {question}")
 
@@ -332,11 +451,14 @@ def role_play(output_obj, role_play_llm_model, interrogator_llm_model, jury, max
         # Add answer to Tech Support history
         tech_support_messages.append({"role": "assistant", "content": answer})
 
+        conversation_history += f"Question: {question}\nAnswer: {answer}"
+
         # --- Step 3: Jury Judges ---
         scores = judge_response(
             jury,
             f"Question: {question}\nAnswer: {answer}",
-            jury_mode, 
+            jury_mode,
+            conversation_history,
             debate_rounds
         )
 
