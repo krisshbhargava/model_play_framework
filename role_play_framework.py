@@ -7,12 +7,27 @@ import logging
 import sys
 import json
 import re
+from dotenv import load_dotenv
 
-client = OpenAI(
-    api_key=os.getenv("OPEN_ROUTER_API_KEY"),
-    # base_url="https://api.deepseek.com"
-    base_url="https://openrouter.ai/api/v1"
-)
+load_dotenv()
+
+client = None
+
+
+def get_client():
+    global client
+    if client is None:
+        api_key = os.getenv("OPEN_ROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "Set OPEN_ROUTER_API_KEY or OPENAI_API_KEY before running API-backed evaluations."
+            )
+        client = OpenAI(
+            api_key=api_key,
+            # base_url="https://api.deepseek.com"
+            base_url="https://openrouter.ai/api/v1"
+        )
+    return client
 
 SYSTEM_ROLE_PROMPT = """
 You are a friendly, knowledgeable tech support specialist for a software company. 
@@ -152,7 +167,7 @@ def setup_logger():
 log = setup_logger()
 
 def make_api_call(model, messages):
-    response = client.chat.completions.create(
+    response = get_client().chat.completions.create(
         model=model,
         messages=messages,
         stream=False
@@ -187,7 +202,7 @@ def make_api_call(model, messages):
 def get_expert_opinion(model, persona, interaction, prompt):
     messages = [{"role": "system", "content": f"{persona}\n{prompt}"},
                 {"role": "user", "content": f"Interaction:\n{interaction}"}]
-    res = client.chat.completions.create(model=model, messages=messages)
+    res = get_client().chat.completions.create(model=model, messages=messages)
     return res.choices[0].message.content.strip()
 
 # --- THE HYBRID DEBATE ENGINE ---
@@ -251,7 +266,7 @@ def judge_response(jury_models, interaction, jury_mode, num_rounds):
                 {"role": "system", "content": f"{persona_cfg['persona']}\n{FINAL_JSON_RUBRIC}"}
             ] + agent_histories[i] + [{"role": "user", "content": user_content}]
 
-            res = client.chat.completions.create(model=model, messages=messages)
+            res = get_client().chat.completions.create(model=model, messages=messages)
             response = res.choices[0].message.content
             
             round_responses.append(response)
