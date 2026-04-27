@@ -1,0 +1,13 @@
+[SPEAKER_01]: Hello?
+[SPEAKER_01]: Hello?
+[SPEAKER_01]: Yeah, how are you doing?
+[SPEAKER_00]: It's been a while.
+[SPEAKER_00]: My name is Daniel.
+[SPEAKER_00]: I'm calling you from US Medicare.
+[SPEAKER_00]: How are you doing today?
+[SPEAKER_01]: I'm pretty good.
+[SPEAKER_01]: Where are you located?
+[SPEAKER_00]: Well, the reason of call is to let you know that you can actually qualify to get some additional benefits.
+[SPEAKER_00]: And your profile shows that you have Medicare Part A and B, right?
+[SPEAKER_01]: That sounds good.
+[SPEAKER_01]: Where are you located?

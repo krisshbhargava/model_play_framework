@@ -1,0 +1,19 @@
+[SPEAKER_01]: Hello?
+[SPEAKER_01]: Hello?
+[SPEAKER_00]: Hi, my name is Barry with senior care.
+[SPEAKER_00]: How are you doing today?
+[SPEAKER_01]: You're a crook.
+[SPEAKER_01]: Can't you sell real insurance?
+[SPEAKER_01]: Can't you sell real insurance?
+[SPEAKER_02]: Hello?
+[SPEAKER_00]: It's not a scam.
+[SPEAKER_00]: It's not a scam, sir.
+[SPEAKER_02]: You sure?
+[SPEAKER_00]: Yes.
+[SPEAKER_02]: How do you know?
+[SPEAKER_02]: That's what a scammer would tell me.
+[SPEAKER_00]: No, it's not a scam.
+[SPEAKER_00]: It's a real call.
+[SPEAKER_02]: Oh, so how come they keep calling me so many times even after they find out that I'm not 60 something years old, even after they think I'm a little kid, even after I tell them I'm not interested.
+[SPEAKER_02]: It makes no sense.
+[SPEAKER_02]: If it's not a scam, why are they so... why do they keep calling?
